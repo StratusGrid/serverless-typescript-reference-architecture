@@ -1,0 +1,6 @@
+domainNameBase: hurst.stratusgriddev.com
+hostname: stra
+restApiLoggingRole: arn:aws:iam::973081273628:role/sg-dev-api-gw-logging-us-east-1
+snsCriticalAlarmArn: arn:aws:sns:us-east-1:973081273628:sg-dev-test-serverless-alarms-us-east-1
+snsCriticalOkArn: arn:aws:sns:us-east-1:973081273628:sg-dev-test-serverless-alarms-us-east-1
+snsNonCriticalAlarmArn: arn:aws:sns:us-east-1:973081273628:sg-dev-test-serverless-noncritical-alarms-us-east-1

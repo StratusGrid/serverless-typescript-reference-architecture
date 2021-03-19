@@ -1,0 +1,22 @@
+# Node
+.npm
+node_modules
+.node_repl_history
+
+# Logs
+logs
+*.log
+npm-debug.log*
+
+# Compiled binary addons (http://nodejs.org/api/addons.html)
+build/Release
+
+# Serverless
+.webpack
+.serverless
+
+# Jetbrains IDEs
+.idea
+
+# Mac OS
+.DS_Store

@@ -1,0 +1,222 @@
+# NOTE: update this with your service name
+service: sls-ts-ref-arch
+
+# Create an optimized package for our handlers
+package:
+  individually: true
+
+plugins:
+  - serverless-bundle # Package our handlers with Webpack
+  - serverless-offline # Enable offline testing
+  - serverless-dotenv-plugin # Load .env as environment variables
+  - serverless-domain-manager # Allow easy use of custom domains for API GW
+  - serverless-iam-roles-per-function
+  - serverless-plugin-canary-deployments # Helps add CodeDeploy canary deployments to lambda functions
+  - serverless-plugin-aws-alerts # Easily create alerts to notify Ops and help prevent deployment of failing code
+
+
+custom:
+#  servicePrefix: tra # This might be used later to change the naming structure
+  sourceRepo: github.com/StratusChris/serverless-typescript-reference-architecture
+  developer: StratusGrid
+  provisioner: Serverless
+  slsVars: ${file(./sls-vars/${opt:stage, "dev"}.yaml)}
+  lambdaInsightsExtensionArn: arn:aws:lambda:${opt:region, 'us-east-1'}:580247275435:layer:LambdaInsightsExtension:14
+  customDomain:
+    domainName: ${self:custom.slsVars.hostname}.${opt:stage, "dev"}.${self:custom.slsVars.domainNameBase}
+    endpointType: regional
+    basePath: ''
+    stage: ${self:provider.stage}
+    createRoute53Record: true
+    autoDomain: true
+  deploymentSettings:
+#    codeDeployRole: some_arn_value
+#    codeDeployRolePermissionsBoundary: some_arn_value
+    stages: # This controls which stages will have CodeDeploy
+      - stg
+      - prd
+  alerts:
+    stages: # Optionally - select which stages to deploy alarms to
+      - dev
+      - stg
+      - prd
+    dashboards: true
+    externalStack: true # Has alerts be created in a separate stack to help avoid stack resource limits
+    topics: # This defines the sns topics to push alerts with
+      critical:
+        ok:
+          topic: ${self:custom.slsVars.snsCriticalOkArn}
+        alarm:
+          topic: ${self:custom.slsVars.snsCriticalAlarmArn}
+      nonCritical:
+        alarm:
+          topic: ${self:custom.slsVars.snsNonCriticalAlarmArn}
+    definitions: # These are alarm pattern definitions that can be added to all functions via alarms or individually
+      anomalousDuration:
+        type: anomalyDetection
+        namespace: 'AWS/Lambda'
+        metric: Duration
+        threshold: 2
+        statistic: Sum
+        period: 60
+        evaluationPeriods: 1
+        datapointsToAlarm: 1
+        comparisonOperator: LessThanLowerOrGreaterThanUpperThreshold
+        alarmActions:
+          - nonCritical
+      sqsQueueDepth: # by default alarms if queues are over 5 minutes max approx message age
+        namespace: 'AWS/SQS'
+        metric: ApproximateAgeOfOldestMessage
+        threshold: 300
+        statistic: Maximum
+        period: 60
+        evaluationPeriods: 5
+        datapointsToAlarm: 1
+        alarmActions:
+          - critical
+        okActions:
+          - critical
+        comparisonOperator: GreaterThanThreshold
+        omitDefaultDimension: true
+    alarms: # the alarms below will be automatically added to all functions, but can be overridden individually
+      - functionErrors # default alarm with no default actions
+      - functionThrottles # default alarm with no default actions
+      - functionInvocations # default alarm with no default actions
+      - functionDuration # default alarm with no default actions
+      - anomalousDuration # alarm defined above, goes to nonCritical by default
+
+
+provider:
+  name: aws
+  runtime: nodejs12.x
+  stage: ${opt:stage, 'dev'}
+  region: ${opt:region, 'us-east-1'}
+  endpointType: REGIONAL # REGIONAL is needed if this will be multi-region. Otherwise, just set to EDGE/default
+  versionFunctions: true # This is needed for aliases and codedeploy to work
+  lambdaHashingVersion: 20201221
+  apiGateway:
+    shouldStartNameWithService: true
+    metrics: true
+  logs:
+    restApi:
+      role: ${self:custom.slsVars.restApiLoggingRole}
+  stackTags:
+    SourceRepo: ${self:custom.sourceRepo}
+    Developer: ${self:custom.developer}
+    Provisioner: ${self:custom.provisioner}
+  tracing:
+    apiGateway: true
+    lambda: true
+  iamManagedPolicies:
+    - 'arn:aws:iam::aws:policy/CloudWatchLambdaInsightsExecutionRolePolicy'
+  iamRoleStatements:
+    - Effect: Allow # allow xray
+      Action:
+        - xray:PutTraceSegments
+        - xray:PutTelemetryRecords
+        - xray:GetSamplingRules
+        - xray:GetSamplingTargets
+        - xray:GetSamplingStatisticSummaries
+      Resource: "*"
+
+resources:
+  Resources:
+    ipTrackingTable:
+      Type: 'AWS::DynamoDB::Table'
+      DeletionPolicy: Retain
+      Properties:
+        AttributeDefinitions:
+          -
+            AttributeName: id
+            AttributeType: S
+          -
+            AttributeName: ip
+            AttributeType: S
+        KeySchema:
+          -
+            AttributeName: id
+            KeyType: HASH
+          -
+            AttributeName: ip
+            KeyType: RANGE
+        BillingMode: PAY_PER_REQUEST
+        TableName: ${self:service}-ip-tracking-${opt:stage, self:provider.stage}
+
+functions:
+  fakeForAlarmsLambda: # this is used to have non-lambda alarms deployed, see https://github.com/ACloudGuru/serverless-plugin-aws-alerts/pull/106
+    handler: handlers/hello.hello
+    alarms:
+      - name: functionErrors # disable default for fake function
+        enabled: false
+      - name: functionThrottles # disable default for fake function
+        enabled: false
+      - name: functionInvocations # disable default for fake function
+        enabled: false
+      - name: functionDuration # disable default for fake function
+        enabled: false
+      - name: anomalousDuration # disable default for fake function
+        enabled: false
+# begin custom non-function alarms
+      - name: sqsQueueDepth
+        nameTemplate: SQS-testQueue-$[metricName]
+        dimensions:
+          - Name: QueueName
+            Value: testQueue
+  hello:
+    handler: handlers/hello.hello
+    events:
+      - http:
+          path: hello
+          method: get
+    deploymentSettings:
+      type: Linear10PercentEvery1Minute
+      alias: Live
+  ipGet:
+    handler: handlers/ipGet.ip
+    layers:
+      - ${self:custom.lambdaInsightsExtensionArn}
+    events:
+      - http:
+          path: ip
+          method: get
+    deploymentSettings:
+      type: Linear10PercentEvery1Minute
+      alias: Live
+    alarms:
+      - name: functionErrors
+        alarmActions: # override default of no alarm actions to add an alarm action and ok action
+          - critical
+        okActions:
+          - critical
+    iamRoleStatements:
+      - Effect: Allow # allow xray
+        Action:
+          - xray:PutTraceSegments
+          - xray:PutTelemetryRecords
+          - xray:GetSamplingRules
+          - xray:GetSamplingTargets
+          - xray:GetSamplingStatisticSummaries
+        Resource: "*"
+      - Effect: Allow # allow lambda insights
+        Action:
+          - logs:CreateLogGroup
+          - logs:CreateLogStream
+          - logs:PutLogEvents
+        Resource: "arn:aws:logs:*:*:log-group:/aws/lambda-insights:*:*"
+      - Effect: Allow
+        Action:
+          - dynamodb:Query
+          - dynamodb:Scan
+          - dynamodb:GetItem
+          - dynamodb:PutItem
+          - dynamodb:UpdateItem
+          - dynamodb:DeleteItem
+        Resource: { 'Fn::GetAtt': ['ipTrackingTable', 'Arn'] }
+    environment:
+      IP_TRACKING_TABLE_NAME: { "Ref": "ipTrackingTable" }
+#    iamRoleStatementsName: my-custom-role-name #optional custom role name setting instead of the default generated one
+#    iamRoleStatements:
+#      - Effect: "Allow"
+#        Action:
+#          - dynamodb:GetItem
+#        Resource: "arn:aws:dynamodb:${self:provider.region}:*:table/mytable"
